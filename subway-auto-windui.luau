@@ -1,4 +1,4 @@
--- subway-auto portable V0.5.2 | instant fallback UI + fast WindUI path + cache (fixes slow UI)
+-- subway-auto portable V0.5.3 | boot with farm OFF (user enables manually)
 local function env()
     local ok, g = pcall(function() return getgenv() end)
     if ok and type(g) == "table" then return g end
@@ -18,7 +18,7 @@ STATE = STATE or {}
 STATE.alive = function() return G.SUBWAY_GEN == MY_GEN end
 
 local SAFE_SPOT = Vector3.new(-122.9, 165.6, -139.9)
-local VER = "v52"
+local VER = "v53"
 local T0 = os.clock()
 local function ms() return string.format("%.1fs", os.clock() - T0) end
 
@@ -28,7 +28,7 @@ local LP = Players.LocalPlayer
 print("[subway-auto] " .. VER .. " boot gen=" .. MY_GEN)
 
 -- core state first (buttons need these)
-STATE.cfg = { farm = true, waveMin = 1, interval = 0.5 }
+STATE.cfg = { farm = false, waveMin = 1, interval = 0.5 }
 local cfg = STATE.cfg
 STATE.anchor = SAFE_SPOT
 STATE.lastRestart = 0
@@ -233,7 +233,7 @@ pcall(function()
             dbg(tostring(txt) .. " -> " .. tostring(r or "ok"))
         end)
     end
-    mkBtn(66, "Farm: toggle (now ON)", function()
+    mkBtn(66, "Farm: toggle (now OFF)", function()
         cfg.farm = not cfg.farm
         return "farm=" .. tostring(cfg.farm)
     end)
@@ -332,10 +332,10 @@ end
 local uiMode = "panel"
 if WindUI then
     local okUI, errUI = pcall(function()
-        local Window = WindUI:CreateWindow({ Title = "subway farm portable", Author = "V0.5.2 portable", Theme = "Dark" })
+        local Window = WindUI:CreateWindow({ Title = "subway farm portable", Author = "V0.5.3 portable", Theme = "Dark" })
         G.SUBWAY_WIN = Window
         local Tab = Window:Tab({ Title = "Zombies Mode", Icon = "zap" })
-        Tab:Toggle({ Title = "Auto Subway", Desc = "Stay at safe spot + Buy + Restart (Subway map only)", Value = true, Callback = function(s) cfg.farm = s end })
+        Tab:Toggle({ Title = "Auto Subway", Desc = "Stay at safe spot + Buy + Restart (Subway map only)", Value = false, Callback = function(s) cfg.farm = s end })
         Tab:Slider({ Title = "Wave min", Value = { Min = 1, Max = 30, Default = 1 }, Step = 1, Callback = function(v)
             local n = tonumber(v)
             if not n and type(v) == "table" then n = tonumber(v.Value) or tonumber(v.Default) end
@@ -361,7 +361,7 @@ if WindUI then
         Tab:Button({ Title = "Check Status", Callback = function()
             WindUI:Notify({ Title = "Status", Content = statusText(), Duration = 6 })
         end })
-        WindUI:Notify({ Title = "subway farm portable", Content = "V0.5.2 loaded (WindUI)", Duration = 3 })
+        WindUI:Notify({ Title = "subway farm portable", Content = "V0.5.3 loaded (WindUI, farm OFF - enable to start)", Duration = 3 })
     end)
     if okUI then
         uiMode = "windui"
