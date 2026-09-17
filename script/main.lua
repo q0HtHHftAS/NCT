@@ -1,4 +1,4 @@
--- subway-auto portable V0.5.3 | boot with farm OFF (user enables manually)
+-- مترو-آلي محمول الإصدار 0.5.3 | يبدأ التشغيل مع تعطيل المزرعة (يفعّلها المستخدم يدويًا)
 local function env()
     local ok, g = pcall(function() return getgenv() end)
     if ok and type(g) == "table" then return g end
@@ -169,7 +169,7 @@ local function statusText()
         .. " distBase=" .. dBase .. " distAnchor=" .. dAnchor
 end
 
--- instant panel: parent resolve with timeout (never infinite-yield)
+-- لوحة فورية: البحث عن الكائن الأب مع مهلة زمنية (لا يوجد انتظار لا نهائي)
 local dbgGui, dbgLabel, dbgFrame
 pcall(function()
     local parent = nil
@@ -216,8 +216,7 @@ local function dbg(t)
     pcall(function() if dbgLabel then dbgLabel.Text = "[subway " .. VER .. "] " .. t end end)
 end
 
--- working buttons RIGHT NOW (no waiting for WindUI)
-pcall(function()
+-- الأزرار تعمل الآن (من دون انتظار WindUI)pcall(function()
     if not dbgFrame then return end
     local function mkBtn(y, txt, cb)
         local b = Instance.new("TextButton")
@@ -299,7 +298,7 @@ pcall(function()
     end
 end)
 
--- 1) network, fast URL first
+-- 1) الشبكة، عنوان URL السريع أولًا
 if not WindUI then
     local WIND_URLS = {
         "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua",
