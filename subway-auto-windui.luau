@@ -1,30 +1,72 @@
--- subway-auto portable V0.5.0 | fixed anchor + no persist + executor check
+-- subway-auto portable V0.5.1 | WindUI multi-URL + native fallback UI (fixes no-UI on other executors)
+local function env()
+    local ok, g = pcall(function() return getgenv() end)
+    if ok and type(g) == "table" then return g end
+    return _G
+end
+local G = env()
 pcall(function()
-    local old = getgenv().SUBWAY_WIN
+    local old = G.SUBWAY_WIN
     if old then pcall(function() old:Destroy() end) end
 end)
-getgenv().SUBWAY_GEN = (getgenv().SUBWAY_GEN or 0) + 1
-local MY_GEN = getgenv().SUBWAY_GEN
+G.SUBWAY_GEN = (G.SUBWAY_GEN or 0) + 1
+local MY_GEN = G.SUBWAY_GEN
+pcall(function() getgenv().SUBWAY_GEN = MY_GEN end)
+pcall(function() _G.SUBWAY_GEN = MY_GEN end)
 
 STATE = STATE or {}
-if type(STATE.alive) ~= "function" then
-    STATE.alive = function() return getgenv().SUBWAY_GEN == MY_GEN end
-end
+STATE.alive = function() return G.SUBWAY_GEN == MY_GEN end
 
 local SAFE_SPOT = Vector3.new(-122.9, 165.6, -139.9)
+local VER = "v51"
 
-local okW, WindUI = pcall(function()
-    return loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local LP = Players.LocalPlayer
+print("[subway-auto] " .. VER .. " boot gen=" .. MY_GEN)
+
+-- Phase A: immediate on-screen boot indicator (always shows, even if WindUI fails)
+local dbgGui, dbgLabel
+pcall(function()
+    local parent = nil
+    pcall(function() parent = gethui and gethui() or nil end)
+    if not parent then
+        pcall(function() parent = game:GetService("CoreGui") end)
+    end
+    local okTest = pcall(function()
+        local t = Instance.new("Frame")
+        t.Parent = parent
+        t:Destroy()
+    end)
+    if not okTest or not parent then
+        parent = LP:WaitForChild("PlayerGui")
+    end
+    dbgGui = Instance.new("ScreenGui")
+    dbgGui.Name = "SubwayAutoDbg"
+    dbgGui.ResetOnSpawn = false
+    dbgGui.Parent = parent
+    local fr = Instance.new("Frame")
+    fr.Size = UDim2.fromOffset(300, 64)
+    fr.Position = UDim2.new(0, 12, 0, 12)
+    fr.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    fr.BackgroundTransparency = 0.2
+    fr.Parent = dbgGui
+    dbgLabel = Instance.new("TextLabel")
+    dbgLabel.Size = UDim2.new(1, -12, 1, -12)
+    dbgLabel.Position = UDim2.new(0, 6, 0, 6)
+    dbgLabel.BackgroundTransparency = 1
+    dbgLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    dbgLabel.TextSize = 13
+    dbgLabel.TextXAlignment = Enum.TextXAlignment.Left
+    dbgLabel.TextYAlignment = Enum.TextYAlignment.Top
+    dbgLabel.TextWrapped = true
+    dbgLabel.Text = "[subway " .. VER .. "] loading..."
+    dbgLabel.Parent = fr
 end)
-if not okW or not WindUI then
-    warn("[subway-auto] WindUI load failed: " .. tostring(WindUI))
-    return
+local function dbg(t)
+    print("[subway-auto] " .. VER .. " " .. tostring(t))
+    pcall(function() if dbgLabel then dbgLabel.Text = "[subway " .. VER .. "] " .. tostring(t) end end)
 end
-
--- NOTE: no Folder= param on purpose (portable: boot always farm=ON, no persisted OFF state)
-local Window = WindUI:CreateWindow({ Title = "subway farm portable", Author = "V0.5.0 portable", Theme = "Dark" })
-getgenv().SUBWAY_WIN = Window
-local Tab = Window:Tab({ Title = "Zombies Mode", Icon = "zap" })
 
 STATE.cfg = { farm = true, waveMin = 1, interval = 0.5 }
 local cfg = STATE.cfg
@@ -38,35 +80,7 @@ STATE.nextBuyAt = 0
 STATE.boughtAt = 0
 STATE.restartDelay = 0
 
-local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local LP = Players.LocalPlayer
-print("[subway-auto] v50 portable boot gen=" .. MY_GEN .. " anchor=" .. tostring(SAFE_SPOT))
-
-if type(fireproximityprompt) ~= "function" then
-    print("[subway-auto] WARN: fireproximityprompt missing on this executor, buy will likely fail")
-    pcall(function()
-        WindUI:Notify({ Title = "Executor warn", Content = "fireproximityprompt NOT found, buy may fail on this executor", Duration = 5 })
-    end)
-end
-
-pcall(function()
-    local m = require(game:GetService("ReplicatedStorage").NetworkCode.GameMatchFlowClient)
-    m.RestartVoteTallyUpdated.On(function(data)
-        local ok, vc, rc = pcall(function() return data.VotedCount, data.RequiredCount end)
-        if ok then STATE.lastTally = tostring(vc) .. "/" .. tostring(rc) end
-    end)
-end)
-pcall(function()
-    local GH = require(game:GetService("ReplicatedStorage").Modules.Gameplay.GameHandler)
-    GH.MatchRestarted:Connect(function()
-        STATE.lastRestart = 0
-        STATE.boughtAt = 0
-        STATE.nextBuyAt = 0
-        pcall(function() WindUI:Notify({ Title = "Restart", Content = "Match restarted!", Duration = 3 }) end)
-    end)
-end)
-
+-- core helpers (no UI dependency)
 local function getChar()
     local c = workspace:FindFirstChild("Characters") and workspace.Characters:FindFirstChild(LP.Name)
     if c then return c end
@@ -183,39 +197,156 @@ local function doRestart()
     return "voted wave=" .. wave
 end
 
-Tab:Toggle({ Title = "Auto Subway", Desc = "Stay at safe spot + Buy + Restart (Subway map only)", Value = true, Callback = function(s) cfg.farm = s end })
-Tab:Slider({ Title = "Wave min", Value = { Min = 1, Max = 30, Default = 1 }, Step = 1, Callback = function(v)
-    local n = tonumber(v)
-    if not n and type(v) == "table" then n = tonumber(v.Value) or tonumber(v.Default) end
-    cfg.waveMin = math.floor(n or 1)
-end })
-Tab:Button({ Title = "Go to safe spot", Callback = function()
-    STATE.anchor = SAFE_SPOT
-    if activeTween then
-        pcall(function() activeTween:Cancel() end)
-        activeTween = nil
+if type(fireproximityprompt) ~= "function" then
+    dbg("WARN fireproximityprompt missing, buy may fail")
+end
+
+-- listeners (never fatal)
+pcall(function()
+    local m = require(game:GetService("ReplicatedStorage").NetworkCode.GameMatchFlowClient)
+    m.RestartVoteTallyUpdated.On(function(data)
+        local ok, vc, rc = pcall(function() return data.VotedCount, data.RequiredCount end)
+        if ok then STATE.lastTally = tostring(vc) .. "/" .. tostring(rc) end
+    end)
+end)
+pcall(function()
+    local GH = require(game:GetService("ReplicatedStorage").Modules.Gameplay.GameHandler)
+    GH.MatchRestarted:Connect(function()
+        STATE.lastRestart = 0
+        STATE.boughtAt = 0
+        STATE.nextBuyAt = 0
+    end)
+end)
+
+-- Phase B: WindUI via multiple URLs (release redirect fails on some executors)
+local WIND_URLS = {
+    "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua",
+    "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua",
+}
+local WindUI = nil
+local windErr = ""
+for i, url in ipairs(WIND_URLS) do
+    dbg("WindUI try " .. i .. "/2 ...")
+    local ok, res = pcall(function()
+        local src = game:HttpGet(url)
+        local fn = (loadstring or load)(src)
+        return fn()
+    end)
+    if ok and res then
+        WindUI = res
+        dbg("WindUI ok via " .. i)
+        break
+    else
+        windErr = tostring(res)
+        print("[subway-auto] WindUI try " .. i .. " failed: " .. windErr)
     end
-    local hrp = getHRP()
-    if hrp then hrp.CFrame = CFrame.new(SAFE_SPOT) end
-    WindUI:Notify({ Title = "Anchor", Content = "reset to safe spot " .. tostring(SAFE_SPOT), Duration = 3 })
-end })
-Tab:Button({ Title = "Set spot = my position", Callback = function()
-    local hrp = getHRP()
-    if hrp then
-        STATE.anchor = hrp.Position + Vector3.new(0, 1, 0)
-        WindUI:Notify({ Title = "Anchor", Content = "anchor set to " .. tostring(STATE.anchor), Duration = 3 })
-    end
-end })
-Tab:Button({ Title = "Check Status", Callback = function()
+end
+
+local function statusText()
     local hrp = getHRP()
     local base = subwayBase()
     local dBase = (hrp and base) and string.format("%.1f", (hrp.Position - base.Position).Magnitude) or "?"
     local dAnchor = (hrp and STATE.anchor) and string.format("%.1f", (STATE.anchor - hrp.Position).Magnitude) or "?"
-    WindUI:Notify({ Title = "Status", Content = "Map=" .. (onSubwayMap() and "Subway" or "OTHER") .. " Yen=" .. parseYen() .. " Wave=" .. parseWave() .. " Bought=" .. tostring(isBought()) .. " Tally=" .. tostring(STATE.lastTally) .. " Buy=" .. tostring(STATE.lastBuyNote) .. " distBase=" .. dBase .. " distAnchor=" .. dAnchor, Duration = 6 })
-end })
+    return "Map=" .. (onSubwayMap() and "Subway" or "OTHER")
+        .. " Yen=" .. parseYen() .. " Wave=" .. parseWave()
+        .. " Bought=" .. tostring(isBought())
+        .. " Tally=" .. tostring(STATE.lastTally)
+        .. " Buy=" .. tostring(STATE.lastBuyNote)
+        .. " distBase=" .. dBase .. " distAnchor=" .. dAnchor
+end
+
+local uiMode = "fallback"
+if WindUI then
+    local okUI, errUI = pcall(function()
+        -- NOTE: no Folder= on purpose (portable: boot always farm=ON)
+        local Window = WindUI:CreateWindow({ Title = "subway farm portable", Author = "V0.5.1 portable", Theme = "Dark" })
+        G.SUBWAY_WIN = Window
+        local Tab = Window:Tab({ Title = "Zombies Mode", Icon = "zap" })
+        Tab:Toggle({ Title = "Auto Subway", Desc = "Stay at safe spot + Buy + Restart (Subway map only)", Value = true, Callback = function(s) cfg.farm = s end })
+        Tab:Slider({ Title = "Wave min", Value = { Min = 1, Max = 30, Default = 1 }, Step = 1, Callback = function(v)
+            local n = tonumber(v)
+            if not n and type(v) == "table" then n = tonumber(v.Value) or tonumber(v.Default) end
+            cfg.waveMin = math.floor(n or 1)
+        end })
+        Tab:Button({ Title = "Go to safe spot", Callback = function()
+            STATE.anchor = SAFE_SPOT
+            if activeTween then
+                pcall(function() activeTween:Cancel() end)
+                activeTween = nil
+            end
+            local hrp = getHRP()
+            if hrp then hrp.CFrame = CFrame.new(SAFE_SPOT) end
+            WindUI:Notify({ Title = "Anchor", Content = "reset to safe spot", Duration = 3 })
+        end })
+        Tab:Button({ Title = "Set spot = my position", Callback = function()
+            local hrp = getHRP()
+            if hrp then
+                STATE.anchor = hrp.Position + Vector3.new(0, 1, 0)
+                WindUI:Notify({ Title = "Anchor", Content = "anchor set " .. tostring(STATE.anchor), Duration = 3 })
+            end
+        end })
+        Tab:Button({ Title = "Check Status", Callback = function()
+            WindUI:Notify({ Title = "Status", Content = statusText(), Duration = 6 })
+        end })
+        WindUI:Notify({ Title = "subway farm portable", Content = "V0.5.1 loaded (WindUI)", Duration = 3 })
+    end)
+    if okUI then
+        uiMode = "windui"
+    else
+        dbg("WindUI build failed: " .. tostring(errUI) .. " | fallback UI")
+        WindUI = nil
+    end
+end
+
+if not WindUI then
+    uiMode = "fallback"
+    dbg("fallback UI (WindUI fail: " .. string.sub(windErr, 1, 120) .. ")")
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", { Title = "subway farm", Text = "WindUI failed, fallback UI. F9 for error.", Duration = 6 })
+    end)
+    -- upgrade dbg panel into working fallback controls
+    pcall(function()
+        local fr = dbgLabel and dbgLabel.Parent or nil
+        if not fr then return end
+        fr.Size = UDim2.fromOffset(300, 220)
+        dbgLabel.TextWrapped = true
+        local function mkBtn(y, txt, cb)
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(1, -12, 0, 30)
+            b.Position = UDim2.new(0, 6, 0, y)
+            b.Text = txt
+            b.TextSize = 14
+            b.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+            b.TextColor3 = Color3.fromRGB(255, 255, 255)
+            b.Parent = fr
+            b.MouseButton1Click:Connect(function()
+                local ok, r = pcall(cb)
+                dbg(tostring(txt) .. " -> " .. tostring(r or "ok") .. " | " .. statusText())
+            end)
+            return b
+        end
+        mkBtn(64, "Farm: toggle (now ON)", function()
+            cfg.farm = not cfg.farm
+            return "farm=" .. tostring(cfg.farm)
+        end)
+        mkBtn(98, "Go to safe spot", function()
+            STATE.anchor = SAFE_SPOT
+            if activeTween then pcall(function() activeTween:Cancel() end) activeTween = nil end
+            local hrp = getHRP()
+            if hrp then hrp.CFrame = CFrame.new(SAFE_SPOT) end
+            return "anchor=safe"
+        end)
+        mkBtn(132, "Set spot = my pos", function()
+            local hrp = getHRP()
+            if hrp then STATE.anchor = hrp.Position + Vector3.new(0, 1, 0) end
+            return tostring(STATE.anchor)
+        end)
+        mkBtn(166, "Status -> F9", function() return statusText() end)
+    end)
+end
 
 task.spawn(function()
-    while STATE.alive() and getgenv().SUBWAY_GEN == MY_GEN do
+    while STATE.alive() and G.SUBWAY_GEN == MY_GEN do
         local okBody, errBody = pcall(function()
             STATE.tick = STATE.tick + 1
             if cfg.farm then
@@ -230,31 +361,24 @@ task.spawn(function()
                     STATE.lastWalk = tostring(okP and rP or ("ERR " .. tostring(rP)))
                     local ok, r = pcall(doBuy)
                     if ok and r then
-                        if string.find(tostring(r), "fired") then
-                            pcall(function() WindUI:Notify({ Title = "Subway", Content = tostring(r), Duration = 2 }) end)
-                        else
-                            STATE.lastBuyNote = tostring(r)
-                        end
+                        STATE.lastBuyNote = tostring(r)
                     else
                         STATE.lastBuyNote = "ERR " .. tostring(r)
                     end
-                    local ok2, r2 = pcall(doRestart)
-                    if ok2 and r2 and string.find(tostring(r2), "voted") then
-                        pcall(function() WindUI:Notify({ Title = "Restart", Content = tostring(r2), Duration = 3 }) end)
-                    end
+                    pcall(doRestart)
                 end
             elseif activeTween then
                 pcall(function() activeTween:Cancel() end)
                 activeTween = nil
             end
             if STATE.tick % 10 == 0 then
-                print("[subway-auto] v50 gen=" .. MY_GEN .. " move=" .. tostring(STATE.lastWalk) .. " yen=" .. parseYen() .. " wave=" .. parseWave() .. " bought=" .. tostring(isBought()) .. " buyNote=" .. tostring(STATE.lastBuyNote) .. " tally=" .. tostring(STATE.lastTally))
+                print("[subway-auto] " .. VER .. " gen=" .. MY_GEN .. " ui=" .. uiMode .. " move=" .. tostring(STATE.lastWalk) .. " yen=" .. parseYen() .. " wave=" .. parseWave() .. " bought=" .. tostring(isBought()) .. " buyNote=" .. tostring(STATE.lastBuyNote) .. " tally=" .. tostring(STATE.lastTally))
             end
         end)
         if not okBody then print("[subway-auto] LOOP ERR:", tostring(errBody)) end
         task.wait(cfg.interval or 0.5)
     end
-    print("[subway-auto] v50 gen=" .. MY_GEN .. " loop ended")
+    print("[subway-auto] " .. VER .. " gen=" .. MY_GEN .. " loop ended")
 end)
 
-WindUI:Notify({ Title = "subway farm portable", Content = "V0.5.0 loaded, anchor=safe spot", Duration = 3 })
+dbg("loaded ui=" .. uiMode .. " anchor=safe spot")
