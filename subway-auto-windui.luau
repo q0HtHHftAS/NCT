@@ -1,4 +1,4 @@
--- subway-auto portable V0.5.1 | WindUI multi-URL + native fallback UI (fixes no-UI on other executors)
+-- subway-auto portable V0.5.2 | instant fallback UI + fast WindUI path + cache (fixes slow UI)
 local function env()
     local ok, g = pcall(function() return getgenv() end)
     if ok and type(g) == "table" then return g end
@@ -18,56 +18,16 @@ STATE = STATE or {}
 STATE.alive = function() return G.SUBWAY_GEN == MY_GEN end
 
 local SAFE_SPOT = Vector3.new(-122.9, 165.6, -139.9)
-local VER = "v51"
+local VER = "v52"
+local T0 = os.clock()
+local function ms() return string.format("%.1fs", os.clock() - T0) end
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local LP = Players.LocalPlayer
 print("[subway-auto] " .. VER .. " boot gen=" .. MY_GEN)
 
--- Phase A: immediate on-screen boot indicator (always shows, even if WindUI fails)
-local dbgGui, dbgLabel
-pcall(function()
-    local parent = nil
-    pcall(function() parent = gethui and gethui() or nil end)
-    if not parent then
-        pcall(function() parent = game:GetService("CoreGui") end)
-    end
-    local okTest = pcall(function()
-        local t = Instance.new("Frame")
-        t.Parent = parent
-        t:Destroy()
-    end)
-    if not okTest or not parent then
-        parent = LP:WaitForChild("PlayerGui")
-    end
-    dbgGui = Instance.new("ScreenGui")
-    dbgGui.Name = "SubwayAutoDbg"
-    dbgGui.ResetOnSpawn = false
-    dbgGui.Parent = parent
-    local fr = Instance.new("Frame")
-    fr.Size = UDim2.fromOffset(300, 64)
-    fr.Position = UDim2.new(0, 12, 0, 12)
-    fr.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-    fr.BackgroundTransparency = 0.2
-    fr.Parent = dbgGui
-    dbgLabel = Instance.new("TextLabel")
-    dbgLabel.Size = UDim2.new(1, -12, 1, -12)
-    dbgLabel.Position = UDim2.new(0, 6, 0, 6)
-    dbgLabel.BackgroundTransparency = 1
-    dbgLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    dbgLabel.TextSize = 13
-    dbgLabel.TextXAlignment = Enum.TextXAlignment.Left
-    dbgLabel.TextYAlignment = Enum.TextYAlignment.Top
-    dbgLabel.TextWrapped = true
-    dbgLabel.Text = "[subway " .. VER .. "] loading..."
-    dbgLabel.Parent = fr
-end)
-local function dbg(t)
-    print("[subway-auto] " .. VER .. " " .. tostring(t))
-    pcall(function() if dbgLabel then dbgLabel.Text = "[subway " .. VER .. "] " .. tostring(t) end end)
-end
-
+-- core state first (buttons need these)
 STATE.cfg = { farm = true, waveMin = 1, interval = 0.5 }
 local cfg = STATE.cfg
 STATE.anchor = SAFE_SPOT
@@ -80,7 +40,6 @@ STATE.nextBuyAt = 0
 STATE.boughtAt = 0
 STATE.restartDelay = 0
 
--- core helpers (no UI dependency)
 local function getChar()
     local c = workspace:FindFirstChild("Characters") and workspace.Characters:FindFirstChild(LP.Name)
     if c then return c end
@@ -197,11 +156,111 @@ local function doRestart()
     return "voted wave=" .. wave
 end
 
+local function statusText()
+    local hrp = getHRP()
+    local base = subwayBase()
+    local dBase = (hrp and base) and string.format("%.1f", (hrp.Position - base.Position).Magnitude) or "?"
+    local dAnchor = (hrp and STATE.anchor) and string.format("%.1f", (STATE.anchor - hrp.Position).Magnitude) or "?"
+    return "Map=" .. (onSubwayMap() and "Subway" or "OTHER")
+        .. " Yen=" .. parseYen() .. " Wave=" .. parseWave()
+        .. " Bought=" .. tostring(isBought())
+        .. " Tally=" .. tostring(STATE.lastTally)
+        .. " Buy=" .. tostring(STATE.lastBuyNote)
+        .. " distBase=" .. dBase .. " distAnchor=" .. dAnchor
+end
+
+-- instant panel: parent resolve with timeout (never infinite-yield)
+local dbgGui, dbgLabel, dbgFrame
+pcall(function()
+    local parent = nil
+    pcall(function() parent = gethui and gethui() or nil end)
+    if not parent then
+        pcall(function() parent = game:GetService("CoreGui") end)
+    end
+    local okTest = pcall(function()
+        local t = Instance.new("Frame")
+        t.Parent = parent
+        t:Destroy()
+    end)
+    if not okTest or not parent then
+        parent = LP:FindFirstChild("PlayerGui")
+        if not parent then
+            parent = LP:WaitForChild("PlayerGui", 5)
+        end
+    end
+    dbgGui = Instance.new("ScreenGui")
+    dbgGui.Name = "SubwayAutoDbg"
+    dbgGui.ResetOnSpawn = false
+    dbgGui.Parent = parent
+    dbgFrame = Instance.new("Frame")
+    dbgFrame.Size = UDim2.fromOffset(300, 220)
+    dbgFrame.Position = UDim2.new(0, 12, 0, 12)
+    dbgFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    dbgFrame.BackgroundTransparency = 0.2
+    dbgFrame.Parent = dbgGui
+    dbgLabel = Instance.new("TextLabel")
+    dbgLabel.Size = UDim2.new(1, -12, 0, 56)
+    dbgLabel.Position = UDim2.new(0, 6, 0, 6)
+    dbgLabel.BackgroundTransparency = 1
+    dbgLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    dbgLabel.TextSize = 13
+    dbgLabel.TextXAlignment = Enum.TextXAlignment.Left
+    dbgLabel.TextYAlignment = Enum.TextYAlignment.Top
+    dbgLabel.TextWrapped = true
+    dbgLabel.Text = "[subway " .. VER .. "] starting..."
+    dbgLabel.Parent = dbgFrame
+end)
+local function dbg(t)
+    t = "[" .. ms() .. "] " .. tostring(t)
+    print("[subway-auto] " .. VER .. " " .. t)
+    pcall(function() if dbgLabel then dbgLabel.Text = "[subway " .. VER .. "] " .. t end end)
+end
+
+-- working buttons RIGHT NOW (no waiting for WindUI)
+pcall(function()
+    if not dbgFrame then return end
+    local function mkBtn(y, txt, cb)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(1, -12, 0, 28)
+        b.Position = UDim2.new(0, 6, 0, y)
+        b.Text = txt
+        b.TextSize = 14
+        b.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+        b.TextColor3 = Color3.fromRGB(255, 255, 255)
+        b.Parent = dbgFrame
+        b.MouseButton1Click:Connect(function()
+            local ok, r = pcall(cb)
+            dbg(tostring(txt) .. " -> " .. tostring(r or "ok"))
+        end)
+    end
+    mkBtn(66, "Farm: toggle (now ON)", function()
+        cfg.farm = not cfg.farm
+        return "farm=" .. tostring(cfg.farm)
+    end)
+    mkBtn(98, "Go to safe spot", function()
+        STATE.anchor = SAFE_SPOT
+        if activeTween then pcall(function() activeTween:Cancel() end) activeTween = nil end
+        local hrp = getHRP()
+        if hrp then hrp.CFrame = CFrame.new(SAFE_SPOT) end
+        return "anchor=safe"
+    end)
+    mkBtn(130, "Set spot = my pos", function()
+        local hrp = getHRP()
+        if hrp then STATE.anchor = hrp.Position + Vector3.new(0, 1, 0) end
+        return tostring(STATE.anchor)
+    end)
+    mkBtn(162, "Status -> label", function() return statusText() end)
+    mkBtn(194, "Close panel", function()
+        if dbgGui then dbgGui.Enabled = false end
+        return "closed (farm keeps running)"
+    end)
+end)
+dbg("panel ready, loading WindUI in background...")
+
 if type(fireproximityprompt) ~= "function" then
     dbg("WARN fireproximityprompt missing, buy may fail")
 end
 
--- listeners (never fatal)
 pcall(function()
     local m = require(game:GetService("ReplicatedStorage").NetworkCode.GameMatchFlowClient)
     m.RestartVoteTallyUpdated.On(function(data)
@@ -218,48 +277,62 @@ pcall(function()
     end)
 end)
 
--- Phase B: WindUI via multiple URLs (release redirect fails on some executors)
-local WIND_URLS = {
-    "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua",
-    "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua",
-}
+-- WindUI: cache first (instant on 2nd run), then fast raw URL, then release URL
+local CACHE = "subway_windui_cache.lua"
 local WindUI = nil
 local windErr = ""
-for i, url in ipairs(WIND_URLS) do
-    dbg("WindUI try " .. i .. "/2 ...")
-    local ok, res = pcall(function()
-        local src = game:HttpGet(url)
-        local fn = (loadstring or load)(src)
-        return fn()
-    end)
-    if ok and res then
-        WindUI = res
-        dbg("WindUI ok via " .. i)
-        break
-    else
-        windErr = tostring(res)
-        print("[subway-auto] WindUI try " .. i .. " failed: " .. windErr)
+local compile = (loadstring or load)
+
+-- 0) disk cache
+pcall(function()
+    if isfile and isfile(CACHE) then
+        local src = readfile(CACHE)
+        if src and #src > 50000 then
+            local t = os.clock()
+            local fn = compile(src)
+            local mod = fn()
+            if mod then
+                WindUI = mod
+                print("[subway-auto] WindUI from cache in " .. string.format("%.1fs", os.clock() - t))
+            end
+        end
+    end
+end)
+
+-- 1) network, fast URL first
+if not WindUI then
+    local WIND_URLS = {
+        "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua",
+        "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua",
+    }
+    for i, url in ipairs(WIND_URLS) do
+        local t = os.clock()
+        local ok, res = pcall(function()
+            local src = game:HttpGet(url)
+            local fn = compile(src)
+            local mod = fn()
+            if mod and src then
+                pcall(function()
+                    if writefile then writefile(CACHE, src) end
+                end)
+            end
+            return mod
+        end)
+        if ok and res then
+            WindUI = res
+            print("[subway-auto] WindUI net ok via " .. i .. " in " .. string.format("%.1fs", os.clock() - t))
+            break
+        else
+            windErr = tostring(res)
+            print("[subway-auto] WindUI try " .. i .. " failed in " .. string.format("%.1fs", os.clock() - t) .. ": " .. windErr)
+        end
     end
 end
 
-local function statusText()
-    local hrp = getHRP()
-    local base = subwayBase()
-    local dBase = (hrp and base) and string.format("%.1f", (hrp.Position - base.Position).Magnitude) or "?"
-    local dAnchor = (hrp and STATE.anchor) and string.format("%.1f", (STATE.anchor - hrp.Position).Magnitude) or "?"
-    return "Map=" .. (onSubwayMap() and "Subway" or "OTHER")
-        .. " Yen=" .. parseYen() .. " Wave=" .. parseWave()
-        .. " Bought=" .. tostring(isBought())
-        .. " Tally=" .. tostring(STATE.lastTally)
-        .. " Buy=" .. tostring(STATE.lastBuyNote)
-        .. " distBase=" .. dBase .. " distAnchor=" .. dAnchor
-end
-
-local uiMode = "fallback"
+local uiMode = "panel"
 if WindUI then
     local okUI, errUI = pcall(function()
-        -- NOTE: no Folder= on purpose (portable: boot always farm=ON)
-        local Window = WindUI:CreateWindow({ Title = "subway farm portable", Author = "V0.5.1 portable", Theme = "Dark" })
+        local Window = WindUI:CreateWindow({ Title = "subway farm portable", Author = "V0.5.2 portable", Theme = "Dark" })
         G.SUBWAY_WIN = Window
         local Tab = Window:Tab({ Title = "Zombies Mode", Icon = "zap" })
         Tab:Toggle({ Title = "Auto Subway", Desc = "Stay at safe spot + Buy + Restart (Subway map only)", Value = true, Callback = function(s) cfg.farm = s end })
@@ -288,60 +361,23 @@ if WindUI then
         Tab:Button({ Title = "Check Status", Callback = function()
             WindUI:Notify({ Title = "Status", Content = statusText(), Duration = 6 })
         end })
-        WindUI:Notify({ Title = "subway farm portable", Content = "V0.5.1 loaded (WindUI)", Duration = 3 })
+        WindUI:Notify({ Title = "subway farm portable", Content = "V0.5.2 loaded (WindUI)", Duration = 3 })
     end)
     if okUI then
         uiMode = "windui"
+        pcall(function() if dbgGui then dbgGui:Destroy() end end)
+        dbgGui = nil
     else
-        dbg("WindUI build failed: " .. tostring(errUI) .. " | fallback UI")
+        print("[subway-auto] WindUI build failed: " .. tostring(errUI) .. " | keep panel")
         WindUI = nil
     end
 end
 
 if not WindUI then
-    uiMode = "fallback"
-    dbg("fallback UI (WindUI fail: " .. string.sub(windErr, 1, 120) .. ")")
+    uiMode = "panel"
+    dbg("panel mode (WindUI: " .. string.sub(windErr, 1, 100) .. ")")
     pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification", { Title = "subway farm", Text = "WindUI failed, fallback UI. F9 for error.", Duration = 6 })
-    end)
-    -- upgrade dbg panel into working fallback controls
-    pcall(function()
-        local fr = dbgLabel and dbgLabel.Parent or nil
-        if not fr then return end
-        fr.Size = UDim2.fromOffset(300, 220)
-        dbgLabel.TextWrapped = true
-        local function mkBtn(y, txt, cb)
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.new(1, -12, 0, 30)
-            b.Position = UDim2.new(0, 6, 0, y)
-            b.Text = txt
-            b.TextSize = 14
-            b.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
-            b.TextColor3 = Color3.fromRGB(255, 255, 255)
-            b.Parent = fr
-            b.MouseButton1Click:Connect(function()
-                local ok, r = pcall(cb)
-                dbg(tostring(txt) .. " -> " .. tostring(r or "ok") .. " | " .. statusText())
-            end)
-            return b
-        end
-        mkBtn(64, "Farm: toggle (now ON)", function()
-            cfg.farm = not cfg.farm
-            return "farm=" .. tostring(cfg.farm)
-        end)
-        mkBtn(98, "Go to safe spot", function()
-            STATE.anchor = SAFE_SPOT
-            if activeTween then pcall(function() activeTween:Cancel() end) activeTween = nil end
-            local hrp = getHRP()
-            if hrp then hrp.CFrame = CFrame.new(SAFE_SPOT) end
-            return "anchor=safe"
-        end)
-        mkBtn(132, "Set spot = my pos", function()
-            local hrp = getHRP()
-            if hrp then STATE.anchor = hrp.Position + Vector3.new(0, 1, 0) end
-            return tostring(STATE.anchor)
-        end)
-        mkBtn(166, "Status -> F9", function() return statusText() end)
+        game:GetService("StarterGui"):SetCore("SendNotification", { Title = "subway farm", Text = "Panel mode ready. WindUI skipped.", Duration = 4 })
     end)
 end
 
@@ -381,4 +417,4 @@ task.spawn(function()
     print("[subway-auto] " .. VER .. " gen=" .. MY_GEN .. " loop ended")
 end)
 
-dbg("loaded ui=" .. uiMode .. " anchor=safe spot")
+dbg("loaded ui=" .. uiMode .. " total " .. ms())
